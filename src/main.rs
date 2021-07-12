@@ -8,8 +8,8 @@ use serenity::{async_trait, prelude::*};
 
 pub mod game;
 
-const MAX_PLAYERS: u8 = 5;
-const PLAYERS: [char; MAX_PLAYERS as usize] = ['X', 'O', 'Y', 'Δ', 'Z'];
+const MAX_PLAYERS: u8 = 8;
+const PLAYERS: [char; MAX_PLAYERS as usize] = ['X', 'O', 'Y', 'Z', 'A', 'B', 'C', 'D'];
 
 /// Stores the current game and its configuration.
 struct GameConfig {
@@ -22,6 +22,8 @@ struct GameConfig {
     /// The game board.
     board: GameBoard,
 
+    player_ids: Vec<u64>,
+
     /// Whether a game is currently being played.
     active: bool,
 }
@@ -32,6 +34,7 @@ impl Default for GameConfig {
             player_count: 2,
             steps: 1_000_000,
             board: Default::default(),
+            player_ids: Vec::new(),
             active: false,
         }
     }
@@ -49,7 +52,12 @@ impl GameConfig {
 
     fn reset(&mut self) {
         self.active = false;
+        self.player_ids = Vec::new();
         self.board.reset();
+    }
+
+    fn winners(&self) -> Option<Winners> {
+        self.board.winners(self.player_count)
     }
 }
 
@@ -99,7 +107,7 @@ impl EventHandler for GameHandler {
                 Some("players") => {
                     if let Some(component) = components.next() {
                         if let Ok(num) = component.parse::<u8>() {
-                            if num > 1 && num < MAX_PLAYERS {
+                            if num > 1 && num <= MAX_PLAYERS {
                                 game_config!(player_count, num);
                                 post!("Player count updated to {}.", num);
                             } else {
@@ -171,6 +179,19 @@ impl EventHandler for GameHandler {
                 }
             }
 
+            // Shows the current state of the board.
+            Some("board") => {
+                let game_config_lock = {
+                    let data_read = ctx.data.read().await;
+                    data_read.get::<GameConfig>().unwrap().clone()
+                };
+
+                {
+                    let game_config = game_config_lock.read().await;
+                    post!("{}", game_config.board);
+                }
+            }
+
             // Resets the game.
             Some("reset") => {
                 let game_config_lock = {
@@ -219,7 +240,7 @@ impl EventHandler for GameHandler {
                             let mut game_config = game_config_lock.write().await;
 
                             // Posts the winners.
-                            if let Some(winners) = game_config.board.winners() {
+                            if let Some(winners) = game_config.winners() {
                                 post!("{}\n{}", winners, game_config.board);
                                 game_config.reset();
                             }

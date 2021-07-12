@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 use std::collections::VecDeque;
 use std::fmt::{Display, Formatter, Result as FmtResult, Write};
 
-use crate::{MAX_PLAYERS, PLAYERS};
+use crate::PLAYERS;
 
 /// Represents a player in the game.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -268,11 +268,11 @@ impl Display for EvalError {
             }
 
             Self::MismatchedLeft { pos } => {
-                write!(f, "mismatched left bracket at position {}", pos)
+                write!(f, "mismatched left bracket at position {}", pos + 1)
             }
 
             Self::MismatchedRight { pos } => {
-                write!(f, "mismatched right bracket at position {}", pos)
+                write!(f, "mismatched right bracket at position {}", pos + 1)
             }
 
             Self::MaxSteps => {
@@ -280,7 +280,7 @@ impl Display for EvalError {
             }
 
             Self::InvalidChar { c, pos } => {
-                write!(f, "invalid character {} at position {}", c, pos)
+                write!(f, "invalid character {} at position {}", c, pos + 1)
             }
 
             Self::Length { len, turn } => write!(
@@ -610,12 +610,12 @@ impl GameBoard {
     }
 
     /// Returns the winners of the game.
-    pub fn winners(&self) -> Option<Winners> {
+    pub fn winners(&self, player_count: u8) -> Option<Winners> {
         if self.filled_buckets != self.bucket_count() {
             return None;
         }
 
-        let mut counts = vec![0; MAX_PLAYERS as usize];
+        let mut counts = vec![0; player_count as usize];
 
         for b in &self.buckets {
             let player = b.data[0];
