@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::VecDeque;
 use std::fmt::{Display, Formatter, Result as FmtResult, Write};
 
@@ -470,6 +471,7 @@ impl GameBoard {
         self.position = 0;
         self.turn = 1;
         self.player = Player::default();
+        self.filled_buckets = 0;
     }
 
     /// Returns a reference to the bucket that's being pointed at.
@@ -625,11 +627,17 @@ impl GameBoard {
         for (idx, count) in counts.into_iter().enumerate() {
             let player = Player::new(idx as u8);
 
-            if count == max_count {
-                winners.push(player);
-            } else if count > max_count {
-                max_count = count;
-                winners = vec![player];
+            match count.cmp(&max_count) {
+                Ordering::Equal => {
+                    winners.push(player);
+                }
+
+                Ordering::Greater => {
+                    max_count = count;
+                    winners = vec![player];
+                }
+
+                _ => {}
             }
         }
 

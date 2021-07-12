@@ -186,7 +186,9 @@ impl EventHandler for GameHandler {
                 post!("Reset succesful!");
             }
 
+            // Any message that isn't a command. It might be a move in the game.
             _ => {
+                // Ignore its own messages, and messages from other bots.
                 if msg.author.bot {
                     return;
                 }
@@ -196,10 +198,13 @@ impl EventHandler for GameHandler {
                     data_read.get::<GameConfig>().unwrap().clone()
                 };
 
+                // Evaluates the message as Brainfuck code.
                 if let Some(res) = {
                     let mut game_config = game_config_lock.write().await;
                     game_config.eval(&msg.content)
                 } {
+                    // Posts any error, except those by invalid moves, as
+                    // they're probably just comments.
                     if let Err(err) = res {
                         if !matches!(err, EvalError::InvalidChar { .. }) {
                             post!("Invalid move: {}", err);
@@ -211,11 +216,15 @@ impl EventHandler for GameHandler {
                         };
 
                         {
-                            let game_config = game_config_lock.read().await;
+                            let mut game_config = game_config_lock.write().await;
 
+                            // Posts the winners.
                             if let Some(winners) = game_config.board.winners() {
                                 post!("{}\n{}", winners, game_config.board);
-                            } else {
+                                game_config.reset();
+                            }
+                            // Posts the current state of the board.
+                            else {
                                 post!("{}", game_config.board);
                             }
                         }
