@@ -110,8 +110,9 @@ impl Display for Bucket {
             f.write_char('_')?;
         }
 
+        write!(f, " {}/{} ", self.fill(), self.capacity())?;
         if self.locked {
-            write!(f, " ✓")?;
+            f.write_char('✓')?;
         }
 
         Ok(())
@@ -189,7 +190,7 @@ impl Bucket {
 }
 
 /// Any of the possible errors while parsing and running a Brainfuck program.
-#[derive(Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum EvalError {
     /// A bucket's fill exceeded its capacity.
     Overflow {
@@ -245,17 +246,17 @@ pub enum EvalError {
 
 impl Display for EvalError {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        match self {
+        match *self {
             Self::Overflow { bucket } => write!(
                 f,
                 "you attempted to add a counter to bucket {}, but it was full",
-                bucket
+                bucket + 1
             ),
 
             Self::Underflow { bucket } => write!(
                 f,
                 "you attempted to remove a counter from bucket {}, but it was empty",
-                bucket
+                bucket + 1
             ),
 
             Self::UnderBounds => {
@@ -440,7 +441,7 @@ impl Display for GameBoard {
 
 impl Default for GameBoard {
     fn default() -> Self {
-        Self::new(vec![5; 10])
+        Self::new(vec![10; 5])
     }
 }
 
