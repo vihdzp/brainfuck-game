@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use crate::game::*;
 
+use serenity::model::id::UserId;
 use serenity::model::{channel::Message, gateway::Ready};
 use serenity::{async_trait, prelude::*};
 
@@ -10,6 +11,7 @@ pub mod game;
 
 const MAX_PLAYERS: u8 = 8;
 const PLAYERS: [char; MAX_PLAYERS as usize] = ['X', 'O', 'Y', 'Z', 'A', 'B', 'C', 'D'];
+const ROLE_ID: u64 = 864243710576689223;
 
 /// Stores the current game and its configuration.
 struct GameConfig {
@@ -22,7 +24,7 @@ struct GameConfig {
     /// The game board.
     board: GameBoard,
 
-    player_ids: Vec<u64>,
+    player_ids: Vec<UserId>,
 
     /// Whether a game is currently being played.
     active: bool,
@@ -59,6 +61,10 @@ impl GameConfig {
     fn winners(&self) -> Option<Winners> {
         self.board.winners(self.player_count)
     }
+
+    fn id(&self) -> Option<UserId> {
+        self.player_ids.get(self.board.player.idx()).copied()
+    }
 }
 
 struct GameHandler;
@@ -71,7 +77,7 @@ impl EventHandler for GameHandler {
     // Event handlers are dispatched through a threadpool, and so multiple
     // events can be dispatched simultaneously.
     async fn message(&self, ctx: Context, msg: Message) {
-        /// Posts a formatted message, enclosed in triple backticks.
+        /// Posts a formatted message.
         macro_rules! post {
             ($($arg:tt)*) => {
                 let contents = format!($($arg)*);
@@ -79,6 +85,13 @@ impl EventHandler for GameHandler {
                 if let Err(why) = msg.channel_id.say(&ctx.http, format!("```{}```", contents)).await {
                     println!("Error sending message: {:?}", why);
                 }
+            };
+        }
+
+        /// Posts a formatted message, enclosed in triple backticks.
+        macro_rules! post_md {
+            ($($arg:tt)*) => {
+                post!("```{}```", format!($($arg)*));
             };
         }
 
@@ -98,6 +111,17 @@ impl EventHandler for GameHandler {
             };
         }
 
+        // Ignore messages from bots, or people without the correct role.
+        if msg.author.bot
+            || msg
+                .author
+                .has_role(&ctx.http, msg.guild_id.unwrap(), ROLE_ID)
+                .await
+                .expect("Could not retrieve role!")
+        {
+            return;
+        }
+
         let mut components = msg.content.split_whitespace();
 
         match components.next() {
@@ -109,15 +133,15 @@ impl EventHandler for GameHandler {
                         if let Ok(num) = component.parse::<u8>() {
                             if num > 1 && num <= MAX_PLAYERS {
                                 game_config!(player_count, num);
-                                post!("Player count updated to {}.", num);
+                                post_md!("Player count updated to {}.", num);
                             } else {
-                                post!("Player count could not be updated: must be at least 2 and at most {}", MAX_PLAYERS);
+                                post_md!("Player count could not be updated: must be at least 2 and at most {}", MAX_PLAYERS);
                             }
                         } else {
-                            post!("Player count could not be parsed.");
+                            post_md!("Player count could not be parsed.");
                         }
                     } else {
-                        post!("Specify the number of players that will play.");
+                        post_md!("Specify the number of players that will play.");
                     }
                 }
 
@@ -126,12 +150,12 @@ impl EventHandler for GameHandler {
                     if let Some(component) = components.next() {
                         if let Ok(steps) = component.parse::<u32>() {
                             game_config!(steps, steps);
-                            post!("Maximum program steps updated to {}.", steps);
+                            post_md!("Maximum program steps updated to {}.", steps);
                         } else {
-                            post!("Step count could not be parsed.");
+                            post_md!("Step count could not be parsed.");
                         }
                     } else {
-                        post!("Specify the maximum amount of steps a Brainfuck code should run for before halting.");
+                        post_md!("Specify the maximum amount of steps a Brainfuck code should run for before halting.");
                     }
                 }
 
@@ -143,16 +167,16 @@ impl EventHandler for GameHandler {
                         if let Ok(num) = component.parse::<u16>() {
                             capacities.push(num as usize);
                         } else {
-                            post!("Could not parse board.");
+                            post_md!("Could not parse board.");
                             break;
                         }
                     }
 
                     if capacities.is_empty() {
-                        post!("Configure the board. Specify the capacities of the buckets as a list separated by spaces.");
+                        post_md!("Configure the board. Specify the capacities of the buckets as a list separated by spaces.");
                     } else {
                         game_config!(board, GameBoard::new(capacities));
-                        post!("Board succesfully updated!");
+                        post_md!("Board succesfully updated!");
                     }
                 }
 
@@ -170,12 +194,12 @@ impl EventHandler for GameHandler {
                     let mut game_config = game_config_lock.write().await;
 
                     if game_config.active {
-                        post!("A game is already active!");
+                        post_md!("A game is already active!");
                         return;
                     }
 
                     game_config.active = true;
-                    post!("{}", game_config.board);
+                    post_md!("{}", game_config.board);
                 }
             }
 
@@ -188,7 +212,7 @@ impl EventHandler for GameHandler {
 
                 {
                     let game_config = game_config_lock.read().await;
-                    post!("{}", game_config.board);
+                    post_md!("{}", game_config.board);
                 }
             }
 
@@ -204,49 +228,59 @@ impl EventHandler for GameHandler {
                     game_config.reset();
                 }
 
-                post!("Reset succesful!");
+                post_md!("Reset succesful!");
             }
 
             // Any message that isn't a command. It might be a move in the game.
             _ => {
-                // Ignore its own messages, and messages from other bots.
-                if msg.author.bot {
-                    return;
-                }
-
                 let game_config_lock = {
                     let data_read = ctx.data.read().await;
                     data_read.get::<GameConfig>().unwrap().clone()
                 };
 
+                let mut game_config = game_config_lock.write().await;
+                let id = msg.author.id;
+
+                match game_config.id() {
+                    Some(new_id) => {
+                        // Ignore messages from the incorrect player.
+                        if new_id != id {
+                            return;
+                        }
+                    }
+
+                    None => {
+                        // Ignore messages from repeat users.
+                        for old_id in &game_config.player_ids {
+                            if *old_id == id {
+                                return;
+                            }
+                        }
+
+                        game_config.player_ids.push(id);
+                    }
+                }
+
                 // Evaluates the message as Brainfuck code.
-                if let Some(res) = {
-                    let mut game_config = game_config_lock.write().await;
-                    game_config.eval(&msg.content)
-                } {
+                if let Some(res) = game_config.eval(&msg.content) {
                     // Posts any error, except those by invalid moves, as
                     // they're probably just comments.
                     if let Err(err) = res {
                         if !matches!(err, EvalError::InvalidChar { .. }) {
-                            post!("Invalid move: {}", err);
+                            post_md!("Invalid move: {}", err);
                         }
                     } else {
-                        let game_config_lock = {
-                            let data_read = ctx.data.read().await;
-                            data_read.get::<GameConfig>().unwrap().clone()
-                        };
-
-                        {
-                            let mut game_config = game_config_lock.write().await;
-
-                            // Posts the winners.
-                            if let Some(winners) = game_config.winners() {
-                                post!("{}\n{}", winners, game_config.board);
-                                game_config.reset();
-                            }
-                            // Posts the current state of the board.
-                            else {
-                                post!("{}", game_config.board);
+                        // Posts the winners.
+                        if let Some(winners) = game_config.winners() {
+                            post_md!("{}\n{}", winners, game_config.board);
+                            game_config.reset();
+                        }
+                        // Posts the current state of the board.
+                        else {
+                            if let Some(id) = game_config.id() {
+                                post!("<@{}>\n```{}```", id, game_config.board);
+                            } else {
+                                post_md!("{}", game_config.board);
                             }
                         }
                     }
