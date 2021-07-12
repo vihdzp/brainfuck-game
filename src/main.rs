@@ -111,14 +111,15 @@ impl EventHandler for GameHandler {
             };
         }
 
-        // Ignore messages from bots, or people without the correct role.
-        if msg.author.bot
-            || msg
-                .author
-                .has_role(&ctx.http, msg.guild_id.unwrap(), ROLE_ID)
-                .await
-                .expect("Could not retrieve role!")
-        {
+        // Checks for the Gamer role.
+        let has_role = msg
+            .author
+            .has_role(&ctx.http, msg.guild_id.unwrap(), ROLE_ID)
+            .await
+            .expect("Could not retrieve role!");
+
+        // Ignore messages from bots, empty messages, or people without the correct role.
+        if msg.author.bot || msg.content.chars().all(char::is_whitespace) || !has_role {
             return;
         }
 
