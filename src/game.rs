@@ -518,7 +518,7 @@ pub struct GameBoard {
 
 impl Display for GameBoard {
     fn fmt(&self, f: &mut Formatter) -> FmtResult {
-        writeln!(f, "Turn {} -- {} to move", self.turn, self.player())?;
+        writeln!(f, "Turn {} -- {} to move", self.turn + 1, self.player())?;
 
         for (idx, bucket) in self.buckets.iter().enumerate() {
             if idx == self.position {

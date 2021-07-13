@@ -244,23 +244,23 @@ impl EventHandler for GameHandler {
                             }
 
                             match players.len() {
-                            0 => "Configure the players. Specify the characters that will be used to represent each player as a list separated by spaces.".to_owned(), 
-                            1 => "Players could not be updated: must be at least 2.".to_owned(),
-                            _ => {
-                                let mut players_sorted = players.clone();
-                                players_sorted.sort();
+                                0 => "Configure the players. Specify the characters that will be used to represent each player as a list separated by spaces.".to_owned(), 
+                                1 => "Players could not be updated: must be at least 2.".to_owned(),
+                                _ => {
+                                    let mut players_sorted = players.clone();
+                                    players_sorted.sort();
 
-                                // Checks for repeat characters.
-                                for i in 0..players_sorted.len() - 1 {
-                                    if players_sorted[i] == players_sorted[i + 1]{
-                                        return format!("Players could not be updated: repeated character {}.", players_sorted[i]);
+                                    // Checks for repeat characters.
+                                    for i in 0..players_sorted.len() - 1 {
+                                        if players_sorted[i] == players_sorted[i + 1]{
+                                            return format!("Players could not be updated: repeated character {}.", players_sorted[i]);
+                                        }
                                     }
-                                }
 
-                                cfg.board.players = Players::new(players);
-                                "Players succesfully updated!".to_owned()
+                                    cfg.board.players = Players::new(players);
+                                    "Players succesfully updated!".to_owned()
+                                }
                             }
-                        }
                         });
 
                         post_md!("{}", res);
