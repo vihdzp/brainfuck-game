@@ -541,7 +541,7 @@ impl Default for GameBoard {
 }
 
 impl GameBoard {
-    /// Initializes a new game with the specified buckets.
+    /// Initializes a new game with the specified buckets and the default settings.
     pub fn new(capacities: Vec<usize>, buffer_buckets: usize) -> Self {
         let mut buckets = Vec::new();
 
@@ -571,7 +571,14 @@ impl GameBoard {
     /// Resets the game, using the new specified capacities but keeping
     /// everything else the same.
     pub fn reset_with(&mut self, capacities: Vec<usize>) {
-        *self = Self::new(capacities, self.buffer_buckets);
+        self.buckets = Vec::new();
+
+        for c in capacities {
+            self.buckets.push(Bucket::new(c));
+        }
+
+        self.position = 0;
+        self.turn = 0;
     }
 
     /// Returns a reference to the bucket that's being pointed at.

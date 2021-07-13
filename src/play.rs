@@ -378,7 +378,7 @@ impl EventHandler for GameHandler {
                 let length = expr.chars().count();
 
                 if length != 0 {
-                    post_md!("The length of **{}** is {}.", expr, length);
+                    post_md!("The length of \"{}\" is {}.", expr, length);
                 } else {
                     post_md!("Calculates the length of a string.")
                 }
