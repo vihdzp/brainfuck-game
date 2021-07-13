@@ -35,6 +35,7 @@ pub struct GameConfig {
     /// The game board.
     board: GameBoard,
 
+    /// The user IDs of the players in turn.
     player_ids: Vec<UserId>,
 
     /// Whether a game is currently being played.
@@ -58,6 +59,7 @@ impl TypeMapKey for GameConfig {
 }
 
 impl GameConfig {
+    /// Evaluates a Brainfuck string, and runs it.
     fn eval(&mut self, str: &str) -> Option<EvalResult<()>> {
         self.active
             .then(|| self.board.eval(str, self.steps, self.player_count))

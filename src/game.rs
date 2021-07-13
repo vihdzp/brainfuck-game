@@ -60,7 +60,7 @@ impl Winners {
     }
 }
 
-/// A command to be executed by the [`Game`].
+/// A command to be executed by the [`GameBoard`].
 #[derive(Clone, Copy)]
 enum Command {
     /// Increments the value that's currently being pointed to.

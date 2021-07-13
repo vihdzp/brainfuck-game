@@ -1,3 +1,5 @@
+//! A fun litle game you can play on Discord.
+
 use std::env;
 
 use game::GameBoard;
