@@ -54,10 +54,6 @@ impl Default for GameConfig {
     }
 }
 
-impl TypeMapKey for GameConfig {
-    type Value = Arc<RwLock<Self>>;
-}
-
 impl GameConfig {
     /// Evaluates a Brainfuck string, and runs it.
     fn eval(&mut self, str: &str) -> Option<EvalResult<()>> {
@@ -107,21 +103,33 @@ impl<'a> MessageHelper<'a> {
         self.post(format!("```{}```", contents)).await
     }
 
+    async fn game_config_lock(&self) -> Arc<RwLock<GameConfig>> {
+        let data_read = self.ctx.data.read().await;
+        let games_map = data_read.get::<GamesMap>().unwrap();
+        if let Some(lock) = games_map.0.get(&self.channel_id) {
+            lock.clone()
+        } else {
+            drop(data_read);
+            let mut data_write = self.ctx.data.write().await;
+            let lock: Arc<RwLock<GameConfig>> = Default::default();
+            data_write
+                .get_mut::<GamesMap>()
+                .unwrap()
+                .0
+                .insert(self.channel_id, lock.clone());
+            lock
+        }
+    }
+
     async fn game_config<Output, F: FnOnce(&GameConfig) -> Output>(&self, f: F) -> Output {
-        let game_config_lock = {
-            let data_read = self.ctx.data.read().await;
-            data_read.get::<GameConfig>().unwrap().clone()
-        };
+        let game_config_lock = self.game_config_lock().await;
 
         let game_config = game_config_lock.read().await;
         f(&*game_config)
     }
 
     async fn game_config_mut<Output, F: FnOnce(&mut GameConfig) -> Output>(&self, f: F) -> Output {
-        let game_config_lock = {
-            let data_read = self.ctx.data.read().await;
-            data_read.get::<GameConfig>().unwrap().clone()
-        };
+        let game_config_lock = self.game_config_lock().await;
 
         let mut game_config = game_config_lock.write().await;
         f(&mut *game_config)
