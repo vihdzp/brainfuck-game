@@ -2,11 +2,6 @@ use std::cmp::Ordering;
 use std::collections::VecDeque;
 use std::fmt::{Display, Formatter, Result as FmtResult, Write};
 
-use serenity::model::id::UserId;
-
-pub const MAX_PLAYERS: u8 = 8;
-pub const PLAYERS: [char; MAX_PLAYERS as usize] = ['X', 'O', 'Y', 'Z', 'A', 'B', 'C', 'D'];
-
 /// Represents a player in the game.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Player(u8);
@@ -33,7 +28,7 @@ impl Player {
 
 impl Display for Player {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        f.write_char(PLAYERS[self.idx()])
+        f.write_char(crate::PLAYERS[self.idx()])
     }
 }
 
@@ -81,11 +76,141 @@ enum Command {
     MoveRight,
 }
 
+/// Any of the possible errors while parsing and running a Brainfuck program.
+#[derive(Clone, Copy, Debug)]
+pub enum EvalError {
+    /// A bucket's fill exceeded its capacity.
+    Overflow {
+        /// The index of the overflowed bucket.
+        position: usize,
+    },
+
+    /// A bucket's fill became negative.
+    Underflow {
+        /// The index of the underflowed bucket.
+        position: usize,
+    },
+
+    /// The position exceeded the number of buckets.
+    OverBounds,
+
+    /// The position became negative.
+    UnderBounds,
+
+    /// You attempted to add a counter to a locked bucket.
+    LockedIncr { position: usize },
+
+    /// You attempted to remove a counter from a locked bucket.
+    LockedDecr { position: usize },
+
+    /// A left bracket in the string does not have a matching right bracket.
+    MismatchedLeft {
+        /// The position of the bracket in the string.
+        idx: usize,
+    },
+
+    /// A right bracket in the string does not have a matching left bracket.
+    MismatchedRight {
+        /// The position of the bracket in the string.
+        idx: usize,
+    },
+
+    /// The computation went on for longer than allowed.
+    MaxSteps,
+
+    /// The string has an invalid character.
+    InvalidChar {
+        /// The invalid character.
+        c: char,
+
+        /// The index of the invalid character in the string.
+        idx: usize,
+    },
+
+    /// The string is greater that can be at this specific turn.
+    Length {
+        /// The length of the string.
+        len: usize,
+
+        /// The current turn number, i.e. the maximal string length.
+        turn: usize,
+    },
+}
+
+impl Display for EvalError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        match *self {
+            Self::Overflow { position } => write!(
+                f,
+                "you attempted to add a counter to bucket {}, but it was full",
+                position + 1
+            ),
+
+            Self::Underflow { position } => write!(
+                f,
+                "you attempted to remove a counter from bucket {}, but it was empty",
+                position + 1
+            ),
+
+            Self::UnderBounds => {
+                write!(f, "you attempted to move left past the first bucket")
+            }
+
+            Self::OverBounds => {
+                write!(f, "you attempted to move right past the last bucket")
+            }
+
+            Self::MismatchedLeft { idx } => {
+                write!(f, "mismatched left bracket at index {}", idx + 1)
+            }
+
+            Self::MismatchedRight { idx } => {
+                write!(f, "mismatched right bracket at index {}", idx + 1)
+            }
+
+            Self::LockedIncr { position } => {
+                write!(
+                    f,
+                    "you attempted to add a counter to bucket {}, but it was locked",
+                    position + 1
+                )
+            }
+
+            Self::LockedDecr { position } => {
+                write!(
+                    f,
+                    "you attempted to remove a counter from bucket {}, but it was locked",
+                    position + 1
+                )
+            }
+
+            Self::MaxSteps => {
+                write!(f, "computation exceeded maximum number of steps")
+            }
+
+            Self::InvalidChar { c, idx } => {
+                write!(f, "invalid character {} at index {}", c, idx + 1)
+            }
+
+            Self::Length { len, turn } => write!(
+                f,
+                "move was {} characters, must be {} characters or less",
+                len, turn
+            ),
+        }
+    }
+}
+
+impl std::error::Error for EvalError {}
+
+/// The result of evaluating a Brainfuck program.
+pub type EvalResult<T> = Result<T, EvalError>;
+
 /// Represents a bucket in the game.
 #[derive(Debug)]
 pub struct Bucket {
     /// The objects in the bucket, together with its capacity.
-    pub data: Vec<Player>,
+    pub counters: Vec<Player>,
 
     /// Whether the bucket is locked, i.e. filled with counters from a single player.
     pub locked: bool,
@@ -94,10 +219,10 @@ pub struct Bucket {
 impl Clone for Bucket {
     fn clone(&self) -> Self {
         let mut data = Vec::with_capacity(self.capacity());
-        data.clone_from(&self.data);
+        data.clone_from(&self.counters);
 
         Self {
-            data,
+            counters: data,
             locked: self.locked,
         }
     }
@@ -105,7 +230,7 @@ impl Clone for Bucket {
 
 impl Display for Bucket {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        for team in &self.data {
+        for team in &self.counters {
             write!(f, "{}", team)?;
         }
 
@@ -126,7 +251,7 @@ impl Bucket {
     /// Initializes a new, empty bucket with the specified capacity.
     pub fn new(capacity: usize) -> Self {
         Self {
-            data: Vec::with_capacity(capacity),
+            counters: Vec::with_capacity(capacity),
             locked: false,
         }
     }
@@ -138,7 +263,7 @@ impl Bucket {
 
     /// Returns the fill of the bucket.
     fn fill(&self) -> usize {
-        self.data.len()
+        self.counters.len()
     }
 
     /// Returns whether the bucket is empty.
@@ -148,7 +273,7 @@ impl Bucket {
 
     /// Returns the capacity of the bucket.
     fn capacity(&self) -> usize {
-        self.data.capacity()
+        self.counters.capacity()
     }
 
     /// Returns the amount of free spaces in the bucket.
@@ -157,148 +282,45 @@ impl Bucket {
     }
 
     /// Pushes the specified player's counter onto the bucket. Returns `true` if successful.
-    fn push(&mut self, player: Player) -> bool {
-        let success = self.free() != 0;
+    fn push(&mut self, player: Player, position: usize) -> EvalResult<()> {
+        match self.free() {
+            0 => {
+                return Err(if self.locked {
+                    EvalError::LockedIncr { position }
+                } else {
+                    EvalError::Overflow { position }
+                })
+            }
 
-        if success {
-            self.data.push(player);
-
-            if self.free() == 0 {
-                let mut data_iter = self.data.iter();
-                let first_team = *data_iter.next().unwrap();
-
-                for &team in data_iter {
-                    if team != first_team {
-                        return success;
+            1 => {
+                for &counter in self.counters.iter() {
+                    if counter != player {
+                        return Ok(());
                     }
                 }
 
                 self.locked = true;
             }
+
+            _ => {}
         }
 
-        success
+        self.counters.push(player);
+        Ok(())
     }
 
     /// Pops the last element from the bucket. Returns `true` if succesful.
-    fn pop(&mut self) -> bool {
-        let success = !(self.is_empty() || self.locked);
-
-        if success {
-            self.data.pop();
-        }
-
-        success
-    }
-}
-
-/// Any of the possible errors while parsing and running a Brainfuck program.
-#[derive(Clone, Copy, Debug)]
-pub enum EvalError {
-    /// A bucket's fill exceeded its capacity.
-    Overflow {
-        /// The index of the overflowed bucket.
-        bucket: usize,
-    },
-
-    /// A bucket's fill became negative.
-    Underflow {
-        /// The index of the underflowed bucket.
-        bucket: usize,
-    },
-
-    /// The position exceeded the number of buckets.
-    OverBounds,
-
-    /// The position became negative.
-    UnderBounds,
-
-    /// A left bracket in the string does not have a matching right bracket.
-    MismatchedLeft {
-        /// The position of the bracket in the string.
-        pos: usize,
-    },
-
-    /// A right bracket in the string does not have a matching left bracket.
-    MismatchedRight {
-        /// The position of the bracket in the string.
-        pos: usize,
-    },
-
-    /// The computation went on for longer than allowed.
-    MaxSteps,
-
-    /// The string has an invalid character.
-    InvalidChar {
-        /// The invalid character.
-        c: char,
-
-        /// The position of the invalid character in the string.
-        pos: usize,
-    },
-
-    /// The string is greater that can be at this specific turn.
-    Length {
-        /// The length of the string.
-        len: usize,
-
-        /// The current turn number, i.e. the maximal string length.
-        turn: usize,
-    },
-}
-
-impl Display for EvalError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        match *self {
-            Self::Overflow { bucket } => write!(
-                f,
-                "you attempted to add a counter to bucket {}, but it was full",
-                bucket + 1
-            ),
-
-            Self::Underflow { bucket } => write!(
-                f,
-                "you attempted to remove a counter from bucket {}, but it was empty",
-                bucket + 1
-            ),
-
-            Self::UnderBounds => {
-                write!(f, "you attempted to move left past the first bucket")
-            }
-
-            Self::OverBounds => {
-                write!(f, "you attempted to move right past the last bucket")
-            }
-
-            Self::MismatchedLeft { pos } => {
-                write!(f, "mismatched left bracket at position {}", pos + 1)
-            }
-
-            Self::MismatchedRight { pos } => {
-                write!(f, "mismatched right bracket at position {}", pos + 1)
-            }
-
-            Self::MaxSteps => {
-                write!(f, "computation exceeded maximum number of steps")
-            }
-
-            Self::InvalidChar { c, pos } => {
-                write!(f, "invalid character {} at position {}", c, pos + 1)
-            }
-
-            Self::Length { len, turn } => write!(
-                f,
-                "move was {} characters, must be {} characters or less",
-                len, turn
-            ),
+    fn pop(&mut self, position: usize) -> EvalResult<()> {
+        if self.is_empty() {
+            Err(EvalError::Underflow { position })
+        } else if self.locked {
+            Err(EvalError::LockedDecr { position })
+        } else {
+            self.counters.pop();
+            Ok(())
         }
     }
 }
-
-impl std::error::Error for EvalError {}
-
-/// The result of evaluating a Brainfuck program.
-pub type EvalResult<T> = Result<T, EvalError>;
 
 /// One of the possible brainfuck instructions, after being parsed.
 #[derive(Clone, Copy)]
@@ -369,16 +391,16 @@ impl Brainfuck {
                             unreachable!()
                         }
                     } else {
-                        return Err(EvalError::MismatchedRight { pos });
+                        return Err(EvalError::MismatchedRight { idx: pos });
                     }
                 }
 
-                _ => return Err(EvalError::InvalidChar { c, pos }),
+                _ => return Err(EvalError::InvalidChar { c, idx: pos }),
             }
         }
 
         if let Some(pos) = queue.pop_back() {
-            Err(EvalError::MismatchedLeft { pos })
+            Err(EvalError::MismatchedLeft { idx: pos })
         } else {
             Ok(Self { tokens, pointer: 0 })
         }
@@ -496,29 +518,14 @@ impl GameBoard {
     /// Increments the current bucket.
     fn incr(&mut self) -> EvalResult<()> {
         let player = self.player;
-
-        if self.bucket_mut().push(player) {
-            if self.bucket().locked {
-                self.filled_buckets += 1;
-            }
-
-            Ok(())
-        } else {
-            Err(EvalError::Overflow {
-                bucket: self.position,
-            })
-        }
+        let position = self.position;
+        self.bucket_mut().push(player, position)
     }
 
     /// Decrements the current bucket.
     fn decr(&mut self) -> EvalResult<()> {
-        if self.bucket_mut().pop() {
-            Ok(())
-        } else {
-            Err(EvalError::Underflow {
-                bucket: self.position,
-            })
-        }
+        let position = self.position;
+        self.bucket_mut().pop(position)
     }
 
     /// Moves the position to the left.
@@ -595,7 +602,7 @@ impl GameBoard {
             }
         }
 
-        Ok(())
+        Err(EvalError::MaxSteps)
     }
 
     /// Evaluates a Brainfuck string, and runs it.
@@ -621,7 +628,7 @@ impl GameBoard {
         let mut counts = vec![0; player_count as usize];
 
         for b in &self.buckets {
-            let player = b.data[0];
+            let player = b.counters[0];
             counts[player.idx()] += 1;
         }
 
@@ -646,56 +653,5 @@ impl GameBoard {
         }
 
         Some(Winners(winners))
-    }
-}
-
-/// Stores the current game and its configuration.
-#[derive(Debug)]
-pub struct GameConfig {
-    /// The number of players in the game.
-    pub player_count: u8,
-
-    /// The maximum number of steps any Brainfuck command is evaluated for.
-    pub steps: u32,
-
-    /// The game board.
-    pub board: GameBoard,
-
-    pub player_ids: Vec<UserId>,
-
-    /// Whether a game is currently being played.
-    pub active: bool,
-}
-
-impl Default for GameConfig {
-    fn default() -> Self {
-        Self {
-            player_count: 2,
-            steps: 1_000_000,
-            board: Default::default(),
-            player_ids: Vec::new(),
-            active: false,
-        }
-    }
-}
-
-impl GameConfig {
-    pub fn eval(&mut self, str: &str) -> Option<EvalResult<()>> {
-        self.active
-            .then(|| self.board.eval(str, self.steps, self.player_count))
-    }
-
-    pub fn reset(&mut self) {
-        self.active = false;
-        self.player_ids = Vec::new();
-        self.board.reset();
-    }
-
-    pub fn winners(&self) -> Option<Winners> {
-        self.board.winners(self.player_count)
-    }
-
-    pub fn id(&self) -> Option<UserId> {
-        self.player_ids.get(self.board.player.idx()).copied()
     }
 }

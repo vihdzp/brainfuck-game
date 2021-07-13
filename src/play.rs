@@ -1,36 +1,130 @@
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
+use std::fmt::Display;
+use std::sync::Arc;
 
-use crate::{game::EvalError, GameBoard, GameConfig, MAX_PLAYERS};
-use serenity::{
-    async_trait,
-    model::{channel::Message, id::ChannelId, prelude::Ready},
-    prelude::*,
-};
+use crate::game::*;
+
+use serenity::http::Http;
+use serenity::model::id::{ChannelId, UserId};
+use serenity::model::{channel::Message, gateway::Ready};
+use serenity::{async_trait, prelude::*};
+
+use crate::{game::EvalError, GameBoard, MAX_PLAYERS};
 
 const ROLE_ID: u64 = 864243710576689223;
 
+/// A map from channels into games.
 #[derive(Debug, Default)]
 pub struct GamesMap(HashMap<ChannelId, Arc<RwLock<GameConfig>>>);
-
-impl std::ops::Deref for GamesMap {
-    type Target = HashMap<ChannelId, Arc<RwLock<GameConfig>>>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl std::ops::DerefMut for GamesMap {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
 
 impl TypeMapKey for GamesMap {
     type Value = Self;
 }
 
 pub struct GameHandler;
+
+/// Stores the current game and its configuration.
+#[derive(Debug)]
+pub struct GameConfig {
+    /// The number of players in the game.
+    player_count: u8,
+
+    /// The maximum number of steps any Brainfuck command is evaluated for.
+    steps: u32,
+
+    /// The game board.
+    board: GameBoard,
+
+    player_ids: Vec<UserId>,
+
+    /// Whether a game is currently being played.
+    active: bool,
+}
+
+impl Default for GameConfig {
+    fn default() -> Self {
+        Self {
+            player_count: 2,
+            steps: 1_000_000,
+            board: Default::default(),
+            player_ids: Vec::new(),
+            active: false,
+        }
+    }
+}
+
+impl TypeMapKey for GameConfig {
+    type Value = Arc<RwLock<Self>>;
+}
+
+impl GameConfig {
+    fn eval(&mut self, str: &str) -> Option<EvalResult<()>> {
+        self.active
+            .then(|| self.board.eval(str, self.steps, self.player_count))
+    }
+
+    fn reset(&mut self) {
+        self.active = false;
+        self.player_ids = Vec::new();
+        self.board.reset();
+    }
+
+    fn winners(&self) -> Option<Winners> {
+        self.board.winners(self.player_count)
+    }
+
+    fn id(&self) -> Option<UserId> {
+        self.player_ids.get(self.board.player.idx()).copied()
+    }
+}
+
+struct MessageHelper<'a> {
+    ctx: &'a Context,
+    channel_id: ChannelId,
+}
+
+impl<'a> MessageHelper<'a> {
+    fn new(ctx: &'a Context, msg: &'a Message) -> Self {
+        Self {
+            ctx,
+            channel_id: msg.channel_id,
+        }
+    }
+
+    fn http(&self) -> &Arc<Http> {
+        &self.ctx.http
+    }
+
+    async fn post<T: Display>(&self, contents: T) {
+        if let Err(why) = self.channel_id.say(self.http(), contents).await {
+            println!("Error sending message: {:?}", why);
+        }
+    }
+
+    async fn post_md<T: Display>(&self, contents: T) {
+        self.post(format!("```{}```", contents)).await
+    }
+
+    async fn game_config<Output, F: FnOnce(&GameConfig) -> Output>(&self, f: F) -> Output {
+        let game_config_lock = {
+            let data_read = self.ctx.data.read().await;
+            data_read.get::<GameConfig>().unwrap().clone()
+        };
+
+        let game_config = game_config_lock.read().await;
+        f(&*game_config)
+    }
+
+    async fn game_config_mut<Output, F: FnOnce(&mut GameConfig) -> Output>(&self, f: F) -> Output {
+        let game_config_lock = {
+            let data_read = self.ctx.data.read().await;
+            data_read.get::<GameConfig>().unwrap().clone()
+        };
+
+        let mut game_config = game_config_lock.write().await;
+        f(&mut *game_config)
+    }
+}
 
 #[async_trait]
 impl EventHandler for GameHandler {
@@ -40,42 +134,28 @@ impl EventHandler for GameHandler {
     // Event handlers are dispatched through a threadpool, and so multiple
     // events can be dispatched simultaneously.
     async fn message(&self, ctx: Context, msg: Message) {
+        let msg_helper = MessageHelper::new(&ctx, &msg);
+
         /// Posts a formatted message.
         macro_rules! post {
-            ($($arg:tt)*) => {
-                let contents = format!($($arg)*);
-
-                if let Err(why) = msg.channel_id.say(&ctx.http, format!("{}", contents)).await {
-                    println!("Error sending message: {:?}", why);
-                }
-            };
+            ($($arg:tt)*) => { msg_helper.post(format!($($arg)*)).await }
         }
 
-        /// Posts a formatted message, enclosed in triple backticks.
+        /// Posts a formatted message between triple backticks.
         macro_rules! post_md {
-            ($($arg:tt)*) => {
-                post!("```{}```", format!($($arg)*));
+            ($($arg:tt)*) => { msg_helper.post_md(format!($($arg)*)).await }
+        }
+
+        macro_rules! game_config {
+            ($f: expr) => {
+                msg_helper.game_config($f).await
             };
         }
 
-        let game_config_lock = {
-            let mut data_read = ctx.data.write().await;
-            let games_map = data_read.get_mut::<GamesMap>().unwrap();
-            if let Some(gcl) = games_map.get(&msg.channel_id) {
-                gcl.clone()
-            } else {
-                games_map.insert(msg.channel_id, Default::default());
-                games_map[&msg.channel_id].clone()
-            }
-        };
-
-        /// Changes a given field of the game configuration to the specified
-        /// value. Wraps around a bunch of mutex bologna.
-        macro_rules! game_config {
-            ($field: ident, $val: expr) => {{
-                let mut game_config = game_config_lock.write().await;
-                game_config.$field = $val;
-            }};
+        macro_rules! game_config_mut {
+            ($f: expr) => {
+                msg_helper.game_config_mut($f).await
+            };
         }
 
         // Checks for the Gamer role.
@@ -100,7 +180,7 @@ impl EventHandler for GameHandler {
                     if let Some(component) = components.next() {
                         if let Ok(num) = component.parse::<u8>() {
                             if num > 1 && num <= MAX_PLAYERS {
-                                game_config!(player_count, num);
+                                game_config_mut!(|cfg| cfg.player_count = num);
                                 post_md!("Player count updated to {}.", num);
                             } else {
                                 post_md!("Player count could not be updated: must be at least 2 and at most {}", MAX_PLAYERS);
@@ -117,7 +197,7 @@ impl EventHandler for GameHandler {
                 Some("steps") => {
                     if let Some(component) = components.next() {
                         if let Ok(steps) = component.parse::<u32>() {
-                            game_config!(steps, steps);
+                            game_config_mut!(|cfg| cfg.steps = steps);
                             post_md!("Maximum program steps updated to {}.", steps);
                         } else {
                             post_md!("Step count could not be parsed.");
@@ -143,7 +223,7 @@ impl EventHandler for GameHandler {
                     if capacities.is_empty() {
                         post_md!("Configure the board. Specify the capacities of the buckets as a list separated by spaces.");
                     } else {
-                        game_config!(board, GameBoard::new(capacities));
+                        game_config_mut!(|cfg| cfg.board = GameBoard::new(capacities));
                         post_md!("Board succesfully updated!");
                     }
                 }
@@ -153,85 +233,97 @@ impl EventHandler for GameHandler {
 
             // Starts a new game.
             Some("play") => {
-                let mut game_config = game_config_lock.write().await;
+                let board = game_config_mut!(|cfg| {
+                    if cfg.active {
+                        return None;
+                    }
 
-                if game_config.active {
+                    cfg.active = true;
+                    Some(cfg.board.to_string())
+                });
+
+                if let Some(board) = board {
+                    post_md!("{}", board);
+                } else {
                     post_md!("A game is already active!");
-                    return;
                 }
-
-                game_config.active = true;
-                post_md!("{}", game_config.board);
             }
 
             // Shows the current state of the board.
             Some("board") => {
-                let game_config = game_config_lock.read().await;
-                post_md!("{}", game_config.board);
+                post_md!("{}", game_config!(|cfg| cfg.board.to_string()));
             }
 
             // Resets the game.
             Some("reset") => {
-                {
-                    let mut game_config = game_config_lock.write().await;
-                    game_config.reset();
-                }
-
+                game_config_mut!(GameConfig::reset);
                 post_md!("Reset succesful!");
             }
 
             // Any message that isn't a command. It might be a move in the game.
             _ => {
-                let mut game_config = game_config_lock.write().await;
                 let id = msg.author.id;
 
-                match game_config.id() {
-                    Some(new_id) => {
-                        // Ignore messages from the incorrect player.
-                        if new_id != id {
-                            return;
-                        }
-                    }
-
-                    None => {
-                        // Ignore messages from repeat users.
-                        for old_id in &game_config.player_ids {
-                            if *old_id == id {
-                                return;
+                let res = game_config_mut!(|cfg| {
+                    match cfg.id() {
+                        Some(new_id) => {
+                            // Ignore messages from the incorrect player.
+                            if new_id != id {
+                                return None;
                             }
                         }
 
-                        game_config.player_ids.push(id);
-                    }
-                }
+                        None => {
+                            // Ignore messages from repeat users.
+                            for old_id in &cfg.player_ids {
+                                if *old_id == id {
+                                    return None;
+                                }
+                            }
 
-                // Evaluates the message as Brainfuck code.
-                if let Some(res) = game_config.eval(&msg.content) {
-                    // Posts any error, except those by invalid moves, as
-                    // they're probably just comments.
-                    if let Err(err) = res {
-                        if !matches!(err, EvalError::InvalidChar { .. }) {
-                            post_md!("Invalid move: {}", err);
+                            cfg.player_ids.push(id);
+                        }
+                    }
+
+                    // Evaluates the message as Brainfuck code.
+                    if let Some(res) = cfg.eval(&msg.content) {
+                        // Posts any error, except those by invalid moves, as
+                        // they're probably just comments.
+                        if let Err(err) = res {
+                            if matches!(err, EvalError::InvalidChar { .. }) {
+                                None
+                            } else {
+                                Some(format!("```Invalid move: {}```", err))
+                            }
+                        } else {
+                            Some(
+                                // Posts the winners.
+                                if let Some(winners) = cfg.winners() {
+                                    cfg.reset();
+                                    format!("```{}\n{}```", winners, cfg.board)
+                                }
+                                // Posts the current state of the board, together with the poster.
+                                else if let Some(id) = cfg.id() {
+                                    format!("<@{}>\n```{}```", id, cfg.board)
+                                }
+                                // Posts the current state of the board.
+                                else {
+                                    format!("```{}```", cfg.board)
+                                },
+                            )
                         }
                     } else {
-                        // Posts the winners.
-                        if let Some(winners) = game_config.winners() {
-                            post_md!("{}\n{}", winners, game_config.board);
-                            game_config.reset();
-                        }
-                        // Posts the current state of the board.
-                        else {
-                            if let Some(id) = game_config.id() {
-                                post!("<@{}>\n```{}```", id, game_config.board);
-                            } else {
-                                post_md!("{}", game_config.board);
-                            }
-                        }
+                        None
                     }
+                });
+
+                if let Some(post) = res {
+                    post!("{}", post);
                 }
             }
         }
     }
+
     // Set a handler to be called on the `ready` event. This is called when a
     // shard is booted, and a READY payload is sent by Discord. This payload
     // contains data like the current user's guild Ids, current user data,
