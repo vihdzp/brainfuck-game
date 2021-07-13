@@ -1,13 +1,14 @@
 use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
 use std::fmt::{Display, Formatter, Result as FmtResult, Write};
+use std::ops::Index;
 
 /// Represents a player in the game.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct Player(char);
 
 impl Player {
-    /// Initializes a new player with the given index.
+    /// Initializes a new player with the given symbol.
     pub fn new(c: char) -> Self {
         Self(c)
     }
@@ -38,7 +39,7 @@ impl Default for Players {
     }
 }
 
-impl std::ops::Index<usize> for Players {
+impl Index<usize> for Players {
     type Output = Player;
 
     fn index(&self, index: usize) -> &Self::Output {
@@ -49,19 +50,27 @@ impl std::ops::Index<usize> for Players {
 /// Represents the winners of a game.
 pub struct Winners(Vec<Player>);
 
+impl Index<usize> for Winners {
+    type Output = Player;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.0[index]
+    }
+}
+
 impl Display for Winners {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
         match self.winner_count() {
-            1 => write!(f, "Player {} won!", self.0[0]),
-            2 => write!(f, "Players {} and {} tied!", self.0[0], self.0[1]),
+            1 => write!(f, "Player {} won!", self[0]),
+            2 => write!(f, "Players {} and {} tied!", self[0], self[1]),
             _ => {
                 write!(f, "Players ")?;
 
-                for player in self.0.iter().take(self.winner_count() - 1) {
+                for player in self.iter().take(self.winner_count() - 1) {
                     write!(f, "{}, ", player)?;
                 }
 
-                write!(f, "and {} tied!", self.0.last().unwrap())
+                write!(f, "and {} tied!", self.last().unwrap())
             }
         }
     }
@@ -71,6 +80,14 @@ impl Winners {
     /// Returns the number of players that won.
     fn winner_count(&self) -> usize {
         self.0.len()
+    }
+
+    fn iter(&self) -> std::slice::Iter<Player> {
+        self.0.iter()
+    }
+
+    fn last(&self) -> Option<&Player> {
+        self.0.last()
     }
 }
 
@@ -112,10 +129,16 @@ pub enum EvalError {
     UnderBounds,
 
     /// You attempted to add a counter to a locked bucket.
-    LockedIncr { position: usize },
+    LockedIncr {
+        /// The position of the bucket.
+        position: usize,
+    },
 
     /// You attempted to remove a counter from a locked bucket.
-    LockedDecr { position: usize },
+    LockedDecr {
+        /// The position of the bucket.
+        position: usize,
+    },
 
     /// A left bracket in the string does not have a matching right bracket.
     MismatchedLeft {
@@ -252,9 +275,9 @@ impl Display for Bucket {
             f.write_char('_')?;
         }
 
-        write!(f, " {}/{} ", self.fill(), self.capacity())?;
+        write!(f, " {}/{}", self.fill(), self.capacity())?;
         if self.locked {
-            f.write_char('✓')?;
+            f.write_str(" ✓")?;
         }
 
         Ok(())
@@ -333,7 +356,7 @@ impl Bucket {
         } else if self.locked {
             Err(EvalError::LockedDecr { position })
         } else {
-            self.counters.pop();
+            self.counters.pop().unwrap();
             Ok(())
         }
     }
@@ -373,7 +396,8 @@ impl Brainfuck {
         let mut queue = VecDeque::new();
         let mut tokens = Vec::new();
 
-        for (pos, c) in str.chars().enumerate() {
+        // Iterates over non-whitespace characters.
+        for (pos, c) in str.chars().filter(|c| !c.is_whitespace()).enumerate() {
             match c {
                 '+' => {
                     tokens.push(Command::Increment.into());
@@ -412,7 +436,9 @@ impl Brainfuck {
                     }
                 }
 
-                _ => return Err(EvalError::InvalidChar { c, idx: pos }),
+                _ => {
+                    return Err(EvalError::InvalidChar { c, idx: pos });
+                }
             }
         }
 
@@ -453,14 +479,14 @@ pub struct GameBoard {
     /// The index of the active bucket.
     pub position: usize,
 
-    /// The number of buckets that have been locked.
-    pub locked_buckets: usize,
-
     /// The turn number in the game.
     pub turn: usize,
 
     /// The player characters in the game, in cyclic order.
     pub players: Players,
+
+    /// The number of buckets that can remain unfilled.
+    pub buffer_buckets: usize,
 }
 
 impl Display for GameBoard {
@@ -483,13 +509,13 @@ impl Display for GameBoard {
 
 impl Default for GameBoard {
     fn default() -> Self {
-        Self::new(vec![10; 5])
+        Self::new(vec![10; 5], 0)
     }
 }
 
 impl GameBoard {
     /// Initializes a new game with the specified buckets.
-    pub fn new(capacities: Vec<usize>) -> Self {
+    pub fn new(capacities: Vec<usize>, buffer_buckets: usize) -> Self {
         let mut buckets = Vec::new();
 
         for c in capacities {
@@ -499,9 +525,9 @@ impl GameBoard {
         Self {
             buckets,
             position: 0,
-            locked_buckets: 0,
             turn: 1,
             players: Default::default(),
+            buffer_buckets,
         }
     }
 
@@ -513,7 +539,12 @@ impl GameBoard {
 
         self.position = 0;
         self.turn = 1;
-        self.locked_buckets = 0;
+    }
+
+    /// Resets the game, using the new specified capacities but keeping
+    /// everything else the same.
+    pub fn reset_with(&mut self, capacities: Vec<usize>) {
+        *self = Self::new(capacities, self.buffer_buckets);
     }
 
     /// Returns a reference to the bucket that's being pointed at.
@@ -531,17 +562,15 @@ impl GameBoard {
         self.buckets.len()
     }
 
+    fn iter(&self) -> std::slice::Iter<Bucket> {
+        self.buckets.iter()
+    }
+
     /// Increments the current bucket.
     fn incr(&mut self) -> EvalResult<()> {
         let player = self.player();
         let position = self.position;
-
-        let init_locked = self.bucket().locked;
-        let res = self.bucket_mut().push(player, position);
-        if !init_locked && self.bucket().locked {
-            self.locked_buckets += 1;
-        }
-        res
+        self.bucket_mut().push(player, position)
     }
 
     /// Decrements the current bucket.
@@ -570,10 +599,12 @@ impl GameBoard {
         }
     }
 
+    /// Returns the index of the current player.
     pub fn player_idx(&self) -> usize {
         (self.turn - 1) % self.players.len()
     }
 
+    /// Returns the current player.
     pub fn player(&self) -> Player {
         self.players[self.player_idx()]
     }
@@ -652,11 +683,20 @@ impl GameBoard {
         self.players.len()
     }
 
+    pub fn locked_buckets(&self) -> usize {
+        self.iter().filter(|&b| b.locked).count()
+    }
+
+    pub fn win_bucket_count(&self) -> usize {
+        self.bucket_count() - self.buffer_buckets
+    }
+
     /// Returns the winners of the game.
     pub fn winners(&self) -> Option<Winners> {
         use std::collections::hash_map::Entry::*;
 
-        if self.locked_buckets != self.bucket_count() {
+        let locked_buckets = self.locked_buckets();
+        if locked_buckets != self.win_bucket_count() {
             return None;
         }
 
