@@ -13,6 +13,7 @@ use crate::{game::EvalError, GameBoard};
 
 const ROLE_ID: u64 = 864243710576689223;
 
+/// Formats a string, but adds triple backticks.
 macro_rules! format_md {
     ($str: literal) => {
         concat!("```", $str, "```").to_owned()
@@ -205,7 +206,7 @@ impl EventHandler for GameHandler {
                         let mut players = Vec::new();
 
                         for component in components {
-                            if component.len() != 1 {
+                            if component.chars().count() != 1 {
                                 return "Each player must be represented by a single character!"
                                     .to_owned();
                             } else {
