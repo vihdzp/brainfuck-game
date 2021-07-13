@@ -2,7 +2,10 @@ use std::cmp::Ordering;
 use std::collections::VecDeque;
 use std::fmt::{Display, Formatter, Result as FmtResult, Write};
 
-use crate::PLAYERS;
+use serenity::model::id::UserId;
+
+pub const MAX_PLAYERS: u8 = 8;
+pub const PLAYERS: [char; MAX_PLAYERS as usize] = ['X', 'O', 'Y', 'Z', 'A', 'B', 'C', 'D'];
 
 /// Represents a player in the game.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -643,5 +646,56 @@ impl GameBoard {
         }
 
         Some(Winners(winners))
+    }
+}
+
+/// Stores the current game and its configuration.
+#[derive(Debug)]
+pub struct GameConfig {
+    /// The number of players in the game.
+    pub player_count: u8,
+
+    /// The maximum number of steps any Brainfuck command is evaluated for.
+    pub steps: u32,
+
+    /// The game board.
+    pub board: GameBoard,
+
+    pub player_ids: Vec<UserId>,
+
+    /// Whether a game is currently being played.
+    pub active: bool,
+}
+
+impl Default for GameConfig {
+    fn default() -> Self {
+        Self {
+            player_count: 2,
+            steps: 1_000_000,
+            board: Default::default(),
+            player_ids: Vec::new(),
+            active: false,
+        }
+    }
+}
+
+impl GameConfig {
+    pub fn eval(&mut self, str: &str) -> Option<EvalResult<()>> {
+        self.active
+            .then(|| self.board.eval(str, self.steps, self.player_count))
+    }
+
+    pub fn reset(&mut self) {
+        self.active = false;
+        self.player_ids = Vec::new();
+        self.board.reset();
+    }
+
+    pub fn winners(&self) -> Option<Winners> {
+        self.board.winners(self.player_count)
+    }
+
+    pub fn id(&self) -> Option<UserId> {
+        self.player_ids.get(self.board.player.idx()).copied()
     }
 }
