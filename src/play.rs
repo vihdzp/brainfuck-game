@@ -373,7 +373,7 @@ impl EventHandler for GameHandler {
             // Computes the length of a string. Convenient in gameplay.
             Some("length") => {
                 let expr: String = components
-                    .flat_map(|s| s.chars().filter(|c| c.is_whitespace()))
+                    .flat_map(|s| s.chars().filter(|c| !c.is_whitespace()))
                     .collect();
                 let length = expr.chars().count();
 
