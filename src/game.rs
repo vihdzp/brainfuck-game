@@ -734,8 +734,7 @@ impl GameBoard {
     pub fn winners(&self) -> Option<Winners> {
         use std::collections::hash_map::Entry::*;
 
-        let locked_buckets = self.locked_buckets() as u16;
-        if locked_buckets < self.win_bucket_count() {
+        if (self.locked_buckets() as u16) < self.win_bucket_count() {
             return None;
         }
 
@@ -755,18 +754,18 @@ impl GameBoard {
         }
 
         let mut max_count = 0;
-        let mut winners = Winners::default();
+        let mut winners = Default::default();
 
         // Computes the players tied for the greatest amount of buckets.
         for (player, count) in counts.into_iter() {
             match count.cmp(&max_count) {
-                Ordering::Equal => {
-                    winners.push(player);
-                }
-
                 Ordering::Greater => {
                     max_count = count;
                     winners = Winners::single(player);
+                }
+
+                Ordering::Equal => {
+                    winners.push(player);
                 }
 
                 _ => {}

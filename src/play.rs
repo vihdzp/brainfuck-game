@@ -170,6 +170,7 @@ impl EventHandler for GameHandler {
     // Event handlers are dispatched through a threadpool, and so multiple
     // events can be dispatched simultaneously.
     async fn message(&self, ctx: Context, msg: Message) {
+        println!("Message: {}\nAuthor: {}", msg.content, msg.author.id);
         let msg_helper = MessageHelper::new(&ctx, &msg);
 
         /// Posts a formatted message.
@@ -388,8 +389,11 @@ impl EventHandler for GameHandler {
             // or perhaps a skip.
             component => {
                 let id = msg.author.id;
+                let mut player = Default::default();
 
                 let res = game_config_mut!(|cfg| {
+                    player = cfg.board.player();
+
                     // In case of a skip, runs the empty string as code.
                     let content = if component == Some("skip") {
                         ""
@@ -429,7 +433,10 @@ impl EventHandler for GameHandler {
                         }
                         // A move was succesfully made.
                         else {
-                            cfg.player_ids.push(id);
+                            // Adds the player to the player list.
+                            if cfg.player_ids.len() < cfg.board.player_count() {
+                                cfg.player_ids.push(id);
+                            }
 
                             Some(
                                 // Posts the winners.
@@ -455,8 +462,15 @@ impl EventHandler for GameHandler {
                     }
                 });
 
+                // Posts message, updates nickname.
                 if let Some(post) = res {
                     post!("{}", post);
+
+                    msg.guild_id
+                        .unwrap()
+                        .edit_member(&ctx.http, id, |m| m.nickname(player.to_string()))
+                        .await
+                        .unwrap();
                 }
             }
         }
