@@ -173,17 +173,27 @@ impl EventHandler for GameHandler {
         }
 
         // Checks for the Gamer role.
-        let has_role = msg
+        let has_role = match msg
             .author
             .has_role(&ctx.http, msg.guild_id.unwrap(), ROLE_ID)
             .await
-            .expect("Could not retrieve role!");
+        {
+            // Whether the message author has the role.
+            Ok(res) => res,
+
+            // We couldn't check the role.
+            Err(err) => {
+                println!("{}", err);
+                false
+            }
+        };
 
         // Ignore messages from bots, empty messages, or people without the correct role.
         if msg.author.bot || msg.content.chars().all(char::is_whitespace) || !has_role {
             return;
         }
 
+        // Splits the message into tokens.
         let mut components = msg.content.split_whitespace();
 
         match components.next() {
@@ -340,13 +350,13 @@ impl EventHandler for GameHandler {
                             if matches!(err, EvalError::InvalidChar { .. }) {
                                 None
                             } else {
-                                Some(format!("```Invalid move: {}.```", err))
+                                Some(format_md!("Invalid move: {}.", err))
                             }
                         } else {
                             Some(
                                 // Posts the winners.
                                 if let Some(winners) = cfg.winners() {
-                                    let res = format!("```{}\n{}```", winners, cfg.board);
+                                    let res = format_md!("{}\n{}", winners, cfg.board);
                                     cfg.reset();
                                     res
                                 }
@@ -356,7 +366,7 @@ impl EventHandler for GameHandler {
                                 }
                                 // Posts the current state of the board.
                                 else {
-                                    format!("```{}```", cfg.board)
+                                    format_md!("{}", cfg.board)
                                 },
                             )
                         }
