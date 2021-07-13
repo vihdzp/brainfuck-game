@@ -307,9 +307,9 @@ impl EventHandler for GameHandler {
                     // Setups the maximum number of steps any instruction runs for.
                     Some("buffer") => {
                         if let Some(component) = components.next() {
-                            if let Ok(steps) = component.parse::<u32>() {
-                                game_config_mut!(|cfg| cfg.steps = steps);
-                                post_md!("Maximum program steps updated to {}.", steps);
+                            if let Ok(buf) = component.parse::<u16>() {
+                                game_config_mut!(|cfg| cfg.board.buffer_buckets = buf);
+                                post_md!("Number of buffer buckets updated to {}.", buf);
                             } else {
                                 post_md!("Step count could not be parsed.");
                             }

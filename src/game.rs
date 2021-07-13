@@ -513,7 +513,7 @@ pub struct GameBoard {
     pub players: Players,
 
     /// The number of buckets that can remain unfilled.
-    pub buffer_buckets: usize,
+    pub buffer_buckets: u16,
 }
 
 impl Display for GameBoard {
@@ -542,7 +542,7 @@ impl Default for GameBoard {
 
 impl GameBoard {
     /// Initializes a new game with the specified buckets and the default settings.
-    pub fn new(capacities: Vec<usize>, buffer_buckets: usize) -> Self {
+    pub fn new(capacities: Vec<usize>, buffer_buckets: u16) -> Self {
         let mut buckets = Vec::new();
 
         for c in capacities {
@@ -726,15 +726,15 @@ impl GameBoard {
     }
 
     /// Returns the number of buckets that must be filled in order to win.
-    pub fn win_bucket_count(&self) -> usize {
-        self.bucket_count() - self.buffer_buckets
+    pub fn win_bucket_count(&self) -> u16 {
+        self.bucket_count() as u16 - self.buffer_buckets
     }
 
     /// Returns the winners of the game.
     pub fn winners(&self) -> Option<Winners> {
         use std::collections::hash_map::Entry::*;
 
-        let locked_buckets = self.locked_buckets();
+        let locked_buckets = self.locked_buckets() as u16;
         if locked_buckets < self.win_bucket_count() {
             return None;
         }
