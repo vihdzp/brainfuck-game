@@ -11,6 +11,7 @@ use serenity::{async_trait, prelude::*};
 
 use crate::{game::EvalError, GameBoard};
 
+const MAX_STEPS: u32 = 10_000_000;
 const ROLE_ID: u64 = 864243710576689223;
 
 /// Formats a string, but adds triple backticks.
@@ -269,11 +270,14 @@ impl EventHandler for GameHandler {
                     Some("steps") => {
                         if let Some(component) = components.next() {
                             if let Ok(steps) = component.parse::<u32>() {
-                                game_config_mut!(|cfg| cfg.steps = steps);
-                                post_md!("Maximum program steps updated to {}.", steps);
-                            } else {
-                                post_md!("Step count could not be parsed.");
+                                if steps <= MAX_STEPS {
+                                    game_config_mut!(|cfg| cfg.steps = steps);
+                                    post_md!("Maximum program steps updated to {}.", steps);
+                                    return;
+                                }
                             }
+
+                            post_md!("Step count could not be parsed.");
                         } else {
                             post_md!("Specify the maximum amount of steps a Brainfuck code should run for before halting.");
                         }
