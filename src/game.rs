@@ -2,6 +2,7 @@ use std::cmp::Ordering;
 use std::collections::{HashMap, VecDeque};
 use std::fmt::{Display, Formatter, Result as FmtResult, Write};
 use std::ops::Index;
+use std::slice::Iter;
 
 /// Represents a player in the game.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -15,21 +16,29 @@ impl Player {
 }
 
 impl Display for Player {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+    fn fmt(&self, f: &mut Formatter) -> FmtResult {
         f.write_char(self.0)
     }
 }
 
+/// The list of players in the game, in cyclic order.
 #[derive(Clone, Debug)]
 pub struct Players(Vec<Player>);
 
 impl Players {
+    /// Initializes a new list of players.
     pub fn new(players: Vec<Player>) -> Self {
         Self(players)
     }
 
+    /// Returns the number of players in the game.
     pub fn len(&self) -> usize {
         self.0.len()
+    }
+
+    /// Returns the index of the current player, based on the turn number.
+    pub fn idx(&self, turn: usize) -> usize {
+        turn % self.len()
     }
 }
 
@@ -48,6 +57,7 @@ impl Index<usize> for Players {
 }
 
 /// Represents the winners of a game.
+#[derive(Default)]
 pub struct Winners(Vec<Player>);
 
 impl Index<usize> for Winners {
@@ -59,7 +69,7 @@ impl Index<usize> for Winners {
 }
 
 impl Display for Winners {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+    fn fmt(&self, f: &mut Formatter) -> FmtResult {
         match self.winner_count() {
             1 => write!(f, "Player {} won!", self[0]),
             2 => write!(f, "Players {} and {} tied!", self[0], self[1]),
@@ -77,17 +87,34 @@ impl Display for Winners {
 }
 
 impl Winners {
+    /// Initializes a winner list.
+    fn new(players: Vec<Player>) -> Self {
+        Self(players)
+    }
+
+    /// Initializes a winner list with a single winner.
+    fn single(player: Player) -> Self {
+        Self::new(vec![player])
+    }
+
     /// Returns the number of players that won.
     fn winner_count(&self) -> usize {
         self.0.len()
     }
 
-    fn iter(&self) -> std::slice::Iter<Player> {
+    /// Pushes a player onto the winner list.
+    fn push(&mut self, player: Player) {
+        self.0.push(player)
+    }
+
+    /// Returns an iterator over the winners.
+    fn iter(&self) -> Iter<Player> {
         self.0.iter()
     }
 
-    fn last(&self) -> Option<&Player> {
-        self.0.last()
+    /// Returns the last winner.
+    fn last(&self) -> Option<Player> {
+        self.0.last().copied()
     }
 }
 
@@ -175,7 +202,7 @@ pub enum EvalError {
 }
 
 impl Display for EvalError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+    fn fmt(&self, f: &mut Formatter) -> FmtResult {
         match *self {
             Self::Overflow { position } => write!(
                 f,
@@ -266,7 +293,7 @@ impl Clone for Bucket {
 }
 
 impl Display for Bucket {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+    fn fmt(&self, f: &mut Formatter) -> FmtResult {
         for team in &self.counters {
             write!(f, "{}", team)?;
         }
@@ -490,7 +517,7 @@ pub struct GameBoard {
 }
 
 impl Display for GameBoard {
-    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+    fn fmt(&self, f: &mut Formatter) -> FmtResult {
         writeln!(f, "Turn {} -- {} to move", self.turn, self.player())?;
 
         for (idx, bucket) in self.buckets.iter().enumerate() {
@@ -525,7 +552,7 @@ impl GameBoard {
         Self {
             buckets,
             position: 0,
-            turn: 1,
+            turn: 0,
             players: Default::default(),
             buffer_buckets,
         }
@@ -538,7 +565,7 @@ impl GameBoard {
         }
 
         self.position = 0;
-        self.turn = 1;
+        self.turn = 0;
     }
 
     /// Resets the game, using the new specified capacities but keeping
@@ -562,7 +589,7 @@ impl GameBoard {
         self.buckets.len()
     }
 
-    fn iter(&self) -> std::slice::Iter<Bucket> {
+    fn iter(&self) -> Iter<Bucket> {
         self.buckets.iter()
     }
 
@@ -601,7 +628,7 @@ impl GameBoard {
 
     /// Returns the index of the current player.
     pub fn player_idx(&self) -> usize {
-        (self.turn - 1) % self.players.len()
+        self.players.idx(self.turn)
     }
 
     /// Returns the current player.
@@ -626,10 +653,12 @@ impl GameBoard {
 
     /// Runs a tokenized Brainfuck program for at most the specified amount of steps.
     fn run(&mut self, mut bf: Brainfuck, steps: u32) -> EvalResult<()> {
-        if bf.len() > self.turn {
+        let turn = self.turn + 1;
+
+        if bf.len() > turn {
             return Err(EvalError::Length {
                 len: bf.len(),
-                turn: self.turn,
+                turn,
             });
         }
 
@@ -679,14 +708,17 @@ impl GameBoard {
         res
     }
 
+    /// Returns the number of players in the game.
     pub fn player_count(&self) -> usize {
         self.players.len()
     }
 
+    /// Returns the number of locked buckets.
     pub fn locked_buckets(&self) -> usize {
-        self.iter().filter(|&b| b.locked).count()
+        self.iter().filter(|b| b.locked).count()
     }
 
+    /// Returns the number of buckets that must be filled in order to win.
     pub fn win_bucket_count(&self) -> usize {
         self.bucket_count() - self.buffer_buckets
     }
@@ -696,12 +728,13 @@ impl GameBoard {
         use std::collections::hash_map::Entry::*;
 
         let locked_buckets = self.locked_buckets();
-        if locked_buckets != self.win_bucket_count() {
+        if locked_buckets < self.win_bucket_count() {
             return None;
         }
 
         let mut counts = HashMap::with_capacity(self.player_count());
 
+        // Computes the number of buckets each player owns.
         for b in &self.buckets {
             match counts.entry(b.counters[0]) {
                 Occupied(mut entry) => {
@@ -715,8 +748,9 @@ impl GameBoard {
         }
 
         let mut max_count = 0;
-        let mut winners = Vec::new();
+        let mut winners = Winners::default();
 
+        // Computes the players tied for the greatest amount of buckets.
         for (player, count) in counts.into_iter() {
             match count.cmp(&max_count) {
                 Ordering::Equal => {
@@ -725,13 +759,13 @@ impl GameBoard {
 
                 Ordering::Greater => {
                     max_count = count;
-                    winners = vec![player];
+                    winners = Winners::single(player);
                 }
 
                 _ => {}
             }
         }
 
-        Some(Winners(winners))
+        Some(winners)
     }
 }
