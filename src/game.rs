@@ -1,34 +1,48 @@
 use std::cmp::Ordering;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::fmt::{Display, Formatter, Result as FmtResult, Write};
 
 /// Represents a player in the game.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct Player(u8);
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct Player(char);
 
 impl Player {
     /// Initializes a new player with the given index.
-    pub fn new(idx: u8) -> Self {
-        Self(idx)
-    }
-
-    pub fn idx(&self) -> usize {
-        self.0 as usize
-    }
-
-    /// Goes to the next player in turn.
-    pub fn next(&mut self, player_count: u8) {
-        self.0 += 1;
-
-        if self.0 == player_count {
-            self.0 = 0;
-        }
+    pub fn new(c: char) -> Self {
+        Self(c)
     }
 }
 
 impl Display for Player {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        f.write_char(crate::PLAYERS[self.idx()])
+        f.write_char(self.0)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Players(Vec<Player>);
+
+impl Players {
+    pub fn new(players: Vec<Player>) -> Self {
+        Self(players)
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
+impl Default for Players {
+    fn default() -> Self {
+        Self::new(vec![Player::new('X'), Player::new('O')])
+    }
+}
+
+impl std::ops::Index<usize> for Players {
+    type Output = Player;
+
+    fn index(&self, index: usize) -> &Self::Output {
+        &self.0[index]
     }
 }
 
@@ -60,7 +74,7 @@ impl Winners {
     }
 }
 
-/// A command to be executed by the [`GameBoard`].
+/// A command to be executed by the [`Game`].
 #[derive(Clone, Copy)]
 enum Command {
     /// Increments the value that's currently being pointed to.
@@ -293,6 +307,8 @@ impl Bucket {
             }
 
             1 => {
+                self.counters.push(player);
+
                 for &counter in self.counters.iter() {
                     if counter != player {
                         return Ok(());
@@ -302,10 +318,11 @@ impl Bucket {
                 self.locked = true;
             }
 
-            _ => {}
+            _ => {
+                self.counters.push(player);
+            }
         }
 
-        self.counters.push(player);
         Ok(())
     }
 
@@ -442,13 +459,13 @@ pub struct GameBoard {
     /// The turn number in the game.
     pub turn: usize,
 
-    /// The player to move in the game.
-    pub player: Player,
+    /// The player characters in the game, in cyclic order.
+    pub players: Players,
 }
 
 impl Display for GameBoard {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        writeln!(f, "Turn {} -- {} to move", self.turn, self.player)?;
+        writeln!(f, "Turn {} -- {} to move", self.turn, self.player())?;
 
         for (idx, bucket) in self.buckets.iter().enumerate() {
             if idx == self.position {
@@ -484,7 +501,7 @@ impl GameBoard {
             position: 0,
             filled_buckets: 0,
             turn: 1,
-            player: Player::default(),
+            players: Default::default(),
         }
     }
 
@@ -496,7 +513,6 @@ impl GameBoard {
 
         self.position = 0;
         self.turn = 1;
-        self.player = Player::default();
         self.filled_buckets = 0;
     }
 
@@ -517,7 +533,7 @@ impl GameBoard {
 
     /// Increments the current bucket.
     fn incr(&mut self) -> EvalResult<()> {
-        let player = self.player;
+        let player = self.player();
         let position = self.position;
         self.bucket_mut().push(player, position)
     }
@@ -548,10 +564,17 @@ impl GameBoard {
         }
     }
 
-    /// Advances the turn number, goes to the next player.
-    fn next_turn(&mut self, player_count: u8) {
+    pub fn player_idx(&self) -> usize {
+        (self.turn - 1) % self.players.len()
+    }
+
+    pub fn player(&self) -> Player {
+        self.players[self.player_idx()]
+    }
+
+    /// Advances the turn number.
+    fn next_turn(&mut self) {
         self.turn += 1;
-        self.player.next(player_count);
     }
 
     /// Executes the specified [`Command`].
@@ -606,38 +629,49 @@ impl GameBoard {
     }
 
     /// Evaluates a Brainfuck string, and runs it.
-    pub fn eval(&mut self, str: &str, steps: u32, player_count: u8) -> EvalResult<()> {
+    pub fn eval(&mut self, str: &str, steps: u32) -> EvalResult<()> {
         let backup = self.clone();
         let res = self.run(Brainfuck::new(str)?, steps);
 
         if res.is_err() {
             *self = backup;
         } else {
-            self.next_turn(player_count);
+            self.next_turn();
         }
 
         res
     }
 
+    pub fn player_count(&self) -> usize {
+        self.players.len()
+    }
+
     /// Returns the winners of the game.
-    pub fn winners(&self, player_count: u8) -> Option<Winners> {
+    pub fn winners(&self) -> Option<Winners> {
+        use std::collections::hash_map::Entry::*;
+
         if self.filled_buckets != self.bucket_count() {
             return None;
         }
 
-        let mut counts = vec![0; player_count as usize];
+        let mut counts = HashMap::with_capacity(self.player_count());
 
         for b in &self.buckets {
-            let player = b.counters[0];
-            counts[player.idx()] += 1;
+            match counts.entry(b.counters[0]) {
+                Occupied(mut entry) => {
+                    *entry.get_mut() += 1;
+                }
+
+                Vacant(entry) => {
+                    entry.insert(1);
+                }
+            }
         }
 
         let mut max_count = 0;
         let mut winners = Vec::new();
 
-        for (idx, count) in counts.into_iter().enumerate() {
-            let player = Player::new(idx as u8);
-
+        for (player, count) in counts.into_iter() {
             match count.cmp(&max_count) {
                 Ordering::Equal => {
                     winners.push(player);

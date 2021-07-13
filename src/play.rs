@@ -9,9 +9,19 @@ use serenity::model::id::{ChannelId, UserId};
 use serenity::model::{channel::Message, gateway::Ready};
 use serenity::{async_trait, prelude::*};
 
-use crate::{game::EvalError, GameBoard, MAX_PLAYERS};
+use crate::{game::EvalError, GameBoard};
 
 const ROLE_ID: u64 = 864243710576689223;
+
+macro_rules! format_md {
+    ($str: literal) => {
+        concat!("```", $str, "```").to_owned()
+    };
+
+    ($str: literal, $($arg: tt)*) => {
+        format!(concat!("```", $str, "```"), $($arg)*)
+    };
+}
 
 /// A map from channels into games.
 #[derive(Debug, Default)]
@@ -21,14 +31,9 @@ impl TypeMapKey for GamesMap {
     type Value = Self;
 }
 
-pub struct GameHandler;
-
 /// Stores the current game and its configuration.
 #[derive(Debug)]
 pub struct GameConfig {
-    /// The number of players in the game.
-    player_count: u8,
-
     /// The maximum number of steps any Brainfuck command is evaluated for.
     steps: u32,
 
@@ -45,7 +50,6 @@ pub struct GameConfig {
 impl Default for GameConfig {
     fn default() -> Self {
         Self {
-            player_count: 2,
             steps: 1_000_000,
             board: Default::default(),
             player_ids: Vec::new(),
@@ -57,8 +61,7 @@ impl Default for GameConfig {
 impl GameConfig {
     /// Evaluates a Brainfuck string, and runs it.
     fn eval(&mut self, str: &str) -> Option<EvalResult<()>> {
-        self.active
-            .then(|| self.board.eval(str, self.steps, self.player_count))
+        self.active.then(|| self.board.eval(str, self.steps))
     }
 
     fn reset(&mut self) {
@@ -68,14 +71,15 @@ impl GameConfig {
     }
 
     fn winners(&self) -> Option<Winners> {
-        self.board.winners(self.player_count)
+        self.board.winners()
     }
 
     fn id(&self) -> Option<UserId> {
-        self.player_ids.get(self.board.player.idx()).copied()
+        self.player_ids.get(self.board.player_idx()).copied()
     }
 }
 
+/// A helper struct whose associated methods wrap around some common operations.
 struct MessageHelper<'a> {
     ctx: &'a Context,
     channel_id: ChannelId,
@@ -97,10 +101,6 @@ impl<'a> MessageHelper<'a> {
         if let Err(why) = self.channel_id.say(self.http(), contents).await {
             println!("Error sending message: {:?}", why);
         }
-    }
-
-    async fn post_md<T: Display>(&self, contents: T) {
-        self.post(format!("```{}```", contents)).await
     }
 
     async fn game_config_lock(&self) -> Arc<RwLock<GameConfig>> {
@@ -136,6 +136,8 @@ impl<'a> MessageHelper<'a> {
     }
 }
 
+pub struct GameHandler;
+
 #[async_trait]
 impl EventHandler for GameHandler {
     // Set a handler for the `message` event - so that whenever a new message
@@ -148,20 +150,22 @@ impl EventHandler for GameHandler {
 
         /// Posts a formatted message.
         macro_rules! post {
-            ($($arg:tt)*) => { msg_helper.post(format!($($arg)*)).await }
+            ($($arg: tt)*) => { msg_helper.post(format!($($arg)*)).await }
         }
 
         /// Posts a formatted message between triple backticks.
         macro_rules! post_md {
-            ($($arg:tt)*) => { msg_helper.post_md(format!($($arg)*)).await }
+            ($($arg: tt)*) => { msg_helper.post(format_md!($($arg)*)).await }
         }
 
+        /// Gets the game configuration and applies a function to its reference.
         macro_rules! game_config {
             ($f: expr) => {
                 msg_helper.game_config($f).await
             };
         }
 
+        /// Gets the game configuration and applies a function to its mutable reference.
         macro_rules! game_config_mut {
             ($f: expr) => {
                 msg_helper.game_config_mut($f).await
@@ -185,22 +189,41 @@ impl EventHandler for GameHandler {
         match components.next() {
             // Sets up some options.
             Some("set") => match components.next() {
-                // Setups the amount of players.
+                // Setups the player characters.
                 Some("players") => {
-                    if let Some(component) = components.next() {
-                        if let Ok(num) = component.parse::<u8>() {
-                            if num > 1 && num <= MAX_PLAYERS {
-                                game_config_mut!(|cfg| cfg.player_count = num);
-                                post_md!("Player count updated to {}.", num);
+                    let res = game_config_mut!(|cfg| {
+                        let mut players = Vec::new();
+
+                        for component in components {
+                            if component.len() != 1 {
+                                return "Each player must be represented by a single character!"
+                                    .to_owned();
                             } else {
-                                post_md!("Player count could not be updated: must be at least 2 and at most {}", MAX_PLAYERS);
+                                players.push(Player::new(component.chars().next().unwrap()));
                             }
-                        } else {
-                            post_md!("Player count could not be parsed.");
                         }
-                    } else {
-                        post_md!("Specify the number of players that will play.");
-                    }
+
+                        match players.len(){
+                            0 => "Configure the players. Specify the characters that will be used to represent each player as a list separated by spaces.".to_owned(), 
+                            1 => "Players could not be updated: must be at least 2.".to_owned(),
+                            _ => {
+                                let mut players_sorted = players.clone();
+                                players_sorted.sort();
+
+                                // Checks for repeat characters.
+                                for i in 0..players_sorted.len() - 1 {
+                                    if players_sorted[i] == players_sorted[i + 1]{
+                                        return format!("Players could not be updated: repeated character {}.", players_sorted[i]);
+                                    }
+                                }
+
+                                cfg.board.players = Players::new(players);
+                                "Players succesfully updated!".to_owned()
+                            }
+                        }
+                    });
+
+                    post_md!("{}", res);
                 }
 
                 // Setups the maximum number of steps any instruction runs for.
@@ -270,8 +293,9 @@ impl EventHandler for GameHandler {
                 post_md!("Reset succesful!");
             }
 
-            // Any message that isn't a command. It might be a move in the game.
-            _ => {
+            // Any message that isn't a command. It might be a move in the game,
+            // or perhaps a skip.
+            component => {
                 let id = msg.author.id;
 
                 let res = game_config_mut!(|cfg| {
@@ -295,15 +319,21 @@ impl EventHandler for GameHandler {
                         }
                     }
 
+                    let content = if component == Some("skip") {
+                        ""
+                    } else {
+                        &msg.content
+                    };
+
                     // Evaluates the message as Brainfuck code.
-                    if let Some(res) = cfg.eval(&msg.content) {
+                    if let Some(res) = cfg.eval(content) {
                         // Posts any error, except those by invalid moves, as
                         // they're probably just comments.
                         if let Err(err) = res {
                             if matches!(err, EvalError::InvalidChar { .. }) {
                                 None
                             } else {
-                                Some(format!("```Invalid move: {}```", err))
+                                Some(format!("```Invalid move: {}.```", err))
                             }
                         } else {
                             Some(

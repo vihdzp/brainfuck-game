@@ -10,9 +10,6 @@ use serenity::prelude::*;
 mod game;
 mod play;
 
-const MAX_PLAYERS: u8 = 8;
-const PLAYERS: [char; MAX_PLAYERS as usize] = ['X', 'O', 'Y', 'Z', 'A', 'B', 'C', 'D'];
-
 #[tokio::main]
 async fn main() {
     // Configure the client with your Discord bot token in the environment.
