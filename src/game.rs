@@ -453,8 +453,8 @@ pub struct GameBoard {
     /// The index of the active bucket.
     pub position: usize,
 
-    /// The number of buckets that have been filled.
-    pub filled_buckets: usize,
+    /// The number of buckets that have been locked.
+    pub locked_buckets: usize,
 
     /// The turn number in the game.
     pub turn: usize,
@@ -499,7 +499,7 @@ impl GameBoard {
         Self {
             buckets,
             position: 0,
-            filled_buckets: 0,
+            locked_buckets: 0,
             turn: 1,
             players: Default::default(),
         }
@@ -513,7 +513,7 @@ impl GameBoard {
 
         self.position = 0;
         self.turn = 1;
-        self.filled_buckets = 0;
+        self.locked_buckets = 0;
     }
 
     /// Returns a reference to the bucket that's being pointed at.
@@ -535,7 +535,13 @@ impl GameBoard {
     fn incr(&mut self) -> EvalResult<()> {
         let player = self.player();
         let position = self.position;
-        self.bucket_mut().push(player, position)
+
+        let init_locked = self.bucket().locked;
+        let res = self.bucket_mut().push(player, position);
+        if !init_locked && self.bucket().locked {
+            self.locked_buckets += 1;
+        }
+        res
     }
 
     /// Decrements the current bucket.
@@ -650,7 +656,7 @@ impl GameBoard {
     pub fn winners(&self) -> Option<Winners> {
         use std::collections::hash_map::Entry::*;
 
-        if self.filled_buckets != self.bucket_count() {
+        if self.locked_buckets != self.bucket_count() {
             return None;
         }
 

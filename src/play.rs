@@ -284,7 +284,14 @@ impl EventHandler for GameHandler {
 
             // Shows the current state of the board.
             Some("board") => {
-                post_md!("{}", game_config!(|cfg| cfg.board.to_string()));
+                post_md!(
+                    "{}",
+                    game_config!(|cfg| if cfg.active {
+                        cfg.board.to_string()
+                    } else {
+                        "No game is currently active!".to_owned()
+                    })
+                );
             }
 
             // Resets the game.
@@ -339,8 +346,9 @@ impl EventHandler for GameHandler {
                             Some(
                                 // Posts the winners.
                                 if let Some(winners) = cfg.winners() {
+                                    let res = format!("```{}\n{}```", winners, cfg.board);
                                     cfg.reset();
-                                    format!("```{}\n{}```", winners, cfg.board)
+                                    res
                                 }
                                 // Posts the current state of the board, together with the poster.
                                 else if let Some(id) = cfg.id() {
