@@ -365,7 +365,7 @@ impl EventHandler for GameHandler {
                 });
 
                 if res {
-                    post_md!("Reset succesful!");
+                    post_md!("Reset successful!");
                 } else {
                     post_md!("No game is currently active!");
                 }
